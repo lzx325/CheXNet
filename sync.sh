@@ -13,9 +13,9 @@ exclude_options="--exclude=\"*\""
 sync(){
     sync_command="rsync -avrzhe ssh --progress ${include_options} ${exclude_options} ${1} ${2}"
     sync_command_dry_run="$sync_command --dry-run"
-    dry_run_output="$(eval $sync_command_dry_run)" || { code="$?";echo "rsync exited with status $code" 1>&2; return 1; } # use eval here because the command contains ""
-    echo "$dry_run_output"
     if [ "$3" = "true" ]; then
+        dry_run_output="$(eval $sync_command_dry_run)" || { code="$?";echo "rsync exited with status $code" 1>&2; return 1; } # use eval here because the command contains ""
+        echo "$dry_run_output"
         read -p "confirm? [y]" choice
     else
         choice="y"
