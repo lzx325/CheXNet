@@ -133,3 +133,70 @@ def augment_index(labels):
                 pos_index, num_augment[c], replace=True)
             augmented_index.extend(list(add_index))
     return augmented_index
+
+
+def augment_index_auc(labels, aucs):
+    labels = np.array(labels)
+    n_images, n_classes = labels.shape
+    classes_to_aug = np.argsort(aucs)[:int(len(aucs)/2)]
+    augment_multiplier = np.linspace(4, 1.5, len(classes_to_aug))-1
+    augmented_index = list(range(n_images))
+    for i, c in enumerate(classes_to_aug):
+        pos_index = (labels[:, c] > 0).nonzero()[0]
+        num_augment = np.floor(
+            len(pos_index)*augment_multiplier[i]).astype(np.int32)
+        add_index = np.random.choice(pos_index, num_augment, replace=True)
+        augmented_index.extend(list(add_index))
+    print("dataset augmentation\n classes augmented %r\n augment_level %r" %
+          (classes_to_aug, augment_multiplier))
+    return augmented_index
+
+
+class ChestXrayDataSetWithAugmentationEachEpoch(Dataset):
+    def __init__(self, data_dir, image_list_file, aucs, transform=None):
+        """
+        Args:
+            data_dir: path to image directory.
+            image_list_file: path to the file containing images
+                with corresponding labels.
+            transform: optional transform to be applied on a sample.
+        """
+        image_names = []
+        labels = []
+        with open(image_list_file, "r") as f:
+            for line in f:
+                items = line.split()
+                image_name = items[0]
+                label = items[1:]
+                label = [int(i) for i in label]
+                image_name = os.path.join(data_dir, image_name)
+                image_names.append(image_name)
+                labels.append(label)
+        # self.image_names self.labels
+
+        aug_index = augment_index_auc(labels, aucs)
+
+        self.image_names = image_names
+        self.labels = labels
+        self.aug_index = aug_index
+        self.transform = transform
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index: the index of item
+
+        Returns:
+            image and its labels
+        """
+        index = self.aug_index[index]
+
+        image_name = self.image_names[index]
+        image = Image.open(image_name).convert('RGB')
+        label = self.labels[index]
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, torch.FloatTensor(label)
+
+    def __len__(self):
+        return len(self.aug_index)

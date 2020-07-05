@@ -7,7 +7,7 @@ import torch.backends.cudnn as cudnn
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
-from read_data import ChestXrayDataSet, ChestXrayDataSetWithAugmentation
+from read_data import ChestXrayDataSet, ChestXrayDataSetWithAugmentation, ChestXrayDataSetWithAugmentationEachEpoch
 from sklearn.metrics import roc_auc_score
 from nn_lib import DenseNet121
 from utils import compute_AUCs
@@ -33,23 +33,13 @@ params = {
     "test_batch_size": 64,
     "lr": 1e-4,
     "beta": 0,
-    "epochs": 40,
-    "base_dir": "./test",
-    "loss_function": "unweighted",
+    "epochs": 25,
+    "base_dir": "./Apr26-aug-epoch",
     "aug_dataset": True,
 }
+if len(sys.argv) > 1:
+    params["base_dir"] = sys.argv[1]
 
-# parse command line parameters
-params["base_dir"] = sys.argv[1]
-assert sys.argv[2] in ("unweighted", "weighted1", "weighted2")
-params["loss_function"] = sys.argv[2]
-assert sys.argv[3] in ("True", "False")
-params["aug_dataset"] = True if sys.argv[3] == "True" else False
-lr = float(sys.argv[4])
-params["lr"] = lr
-
-if params["aug_dataset"] and (params["loss_function"] != "unweighted"):
-    assert False
 if os.path.exists(params["base_dir"]):
     assert False
 
@@ -89,20 +79,13 @@ def main():
                                         ])
 
     # load data
-    if params["aug_dataset"]:
-        train_dataset = ChestXrayDataSetWithAugmentation(data_dir=DATA_DIR,
-                                                         image_list_file=TRAIN_IMAGE_LIST,
-                                                         transform=train_transform)
-    else:
-        train_dataset = ChestXrayDataSet(data_dir=DATA_DIR,
-                                         image_list_file=TRAIN_IMAGE_LIST,
-                                         transform=train_transform)
-
-    train_loader = DataLoader(
-        dataset=train_dataset, batch_size=params["train_batch_size"], shuffle=True, num_workers=8, pin_memory=True)
+    # train_dataset = ChestXrayDataSet(data_dir=DATA_DIR,
+    #                                  image_list_file=TRAIN_IMAGE_LIST,
+    #                                  transform=train_transform)
+    # train_loader = DataLoader(
+    #     dataset=train_dataset, batch_size=params["train_batch_size"], shuffle=True, num_workers=8, pin_memory=True)
     train_evaluation_dataset = ChestXrayDataSet(
         data_dir=DATA_DIR, image_list_file=TRAIN_IMAGE_LIST, transform=test_transform)
-
     train_evaluation_loader = DataLoader(
         dataset=train_evaluation_dataset, batch_size=params["test_batch_size"], shuffle=False, num_workers=8, pin_memory=True)
     dev_dataset = ChestXrayDataSet(
@@ -117,36 +100,27 @@ def main():
     optimizer = torch.optim.Adam(
         model.parameters(), lr=params["lr"], weight_decay=params["beta"])
 
-    def train(epoch):
+    def train(epoch, dev_auc):
         print("start training epoch %d" % (epoch))
         start_time = time()
         local_step = 0
         running_loss = 0
         running_loss_list = []
         model.train()
-        if not params["aug_dataset"]:
-            pos_weight = torch.tensor(
-                train_dataset.pos_weight, dtype=torch.float32).cuda()
-            neg_weight = torch.tensor(
-                train_dataset.neg_weight, dtype=torch.float32).cuda()
-            class_weight = torch.tensor(
-                train_dataset.class_weight, dtype=torch.float32).cuda()
+        if dev_auc is not None:
+            train_dataset = ChestXrayDataSetWithAugmentationEachEpoch(
+                data_dir=DATA_DIR, image_list_file=TRAIN_IMAGE_LIST, aucs=dev_auc, transform=train_transform)
+        else:
+            train_dataset = ChestXrayDataSet(
+                data_dir=DATA_DIR, image_list_file=TRAIN_IMAGE_LIST, transform=train_transform)
+        train_loader = DataLoader(
+            dataset=train_dataset, batch_size=params["train_batch_size"], shuffle=True, num_workers=8, pin_memory=True)
         for i, (inp, target) in enumerate(train_loader):
             inp = inp.cuda()
             target = target.cuda()
             optimizer.zero_grad()
             output = model(inp)
-
-            if params["loss_function"] == "unweighted":
-                local_loss = F.binary_cross_entropy(output, target)
-            elif params["loss_function"] == "weighted1":
-                local_loss = weighted_binary_cross_entropy(
-                    output, target, pos_weight, neg_weight)
-            elif params["loss_function"] == "weighted2":
-                local_loss = weighted_binary_cross_entropy2(
-                    output, target, class_weight)
-            else:
-                assert False
+            local_loss = F.binary_cross_entropy(output, target)
             running_loss += local_loss.item()
             local_loss.backward()
             optimizer.step()
@@ -166,13 +140,6 @@ def main():
         pred = torch.tensor([], dtype=torch.float32, device="cuda")
         loss = 0.
         model.eval()
-        if not params["aug_dataset"]:
-            pos_weight = torch.tensor(
-                pytorch_dataset.pos_weight, dtype=torch.float32).cuda()
-            neg_weight = torch.tensor(
-                pytorch_dataset.neg_weight, dtype=torch.float32).cuda()
-            class_weight = torch.tensor(
-                train_dataset.class_weight, dtype=torch.float32).cuda()
         with torch.no_grad():
             for i, (inp, target) in enumerate(dataset_loader):
                 target = target.cuda()
@@ -182,18 +149,8 @@ def main():
                 output = model(inp_reshaped)
                 output_mean = output.view(bs, n_crops, -1).mean(1)
                 pred = torch.cat((pred, output_mean), 0)
-                if params["loss_function"] == "unweighted":
-                    local_loss = F.binary_cross_entropy(output_mean, target)
-                elif params["loss_function"] == "weighted1":
-                    local_loss = weighted_binary_cross_entropy(
-                        output_mean, target, pos_weight, neg_weight)
-                elif params["loss_function"] == "weighted2":
-                    local_loss = weighted_binary_cross_entropy2(
-                        output_mean, target, class_weight)
-                else:
-                    assert False
+                local_loss = F.binary_cross_entropy(output_mean, target)
                 loss += local_loss*len(target)/len(pytorch_dataset)
-
         AUROCs = compute_AUCs(gt, pred, N_CLASSES)
         AUROC_avg = np.array(AUROCs).mean()
         print("epoch %d, %s, loss: %.5f, avg_AUC: %.5f" %
@@ -245,7 +202,12 @@ def main():
 
     history, last_epoch = train_initialization()
     for epoch in range(last_epoch+1, params["epochs"]+1):
-        train_eval_vals = train(epoch)
+        if len(history["dev_eval_vals_list"]) == 0:
+            dev_roc = None
+        else:
+            dev_roc = [history["dev_eval_vals_list"][-1]["auroc"][class_name]
+                       for class_name in CLASS_NAMES]
+        train_eval_vals = train(epoch, dev_roc)
         train_eval_vals2 = evaluate(
             epoch, train_evaluation_loader, train_evaluation_dataset, "train set")
         dev_eval_vals = evaluate(epoch, dev_loader, dev_dataset, "dev set")
@@ -254,4 +216,15 @@ def main():
 
 
 if __name__ == "__main__":
+    # dev_auc = np.linspace(1, 0.5, 14)
+    # train_transform = transforms.Compose([
+    #     transforms.Resize(256),
+    #     transforms.RandomCrop(224),
+    #     transforms.RandomHorizontalFlip(),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize([0.485, 0.456, 0.406],
+    #                          [0.229, 0.224, 0.225]),
+    # ])
+    # train_dataset = ChestXrayDataSetWithAugmentationEachEpoch(
+    #     data_dir=DATA_DIR, image_list_file=TRAIN_IMAGE_LIST, aucs=dev_auc, transform=train_transform)
     main()

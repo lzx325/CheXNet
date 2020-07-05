@@ -17,7 +17,8 @@ from read_data import ChestXrayDataSet
 from sklearn.metrics import roc_auc_score
 from nn_lib import DenseNet121
 from utils import compute_AUCs
-CKPT_PATH = './Apr15-full_run/best_model.pkl'
+import sys
+CKPT_PATH = sys.argv[1]
 OLD_CHECKPOINT = False
 N_CLASSES = 14
 CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia',
@@ -114,10 +115,13 @@ def main():
     # np.save("./gt.pkl", gt.cpu().numpy())
 
     AUROCs = compute_AUCs(gt, pred, N_CLASSES)
-    AUROC_avg = np.array(AUROCs).mean()
+    AUROCs = np.array(AUROCs)
+    AUROC_avg = AUROCs.mean()
     print('The average AUROC is {AUROC_avg:.3f}'.format(AUROC_avg=AUROC_avg))
     for i in range(N_CLASSES):
         print('The AUROC of {} is {}'.format(CLASS_NAMES[i], AUROCs[i]))
+    base_dir = os.path.dirname(CKPT_PATH)
+    np.savetxt(os.path.join(base_dir, "test_auroc.txt"),AUROCs)
 
 
 if __name__ == '__main__':
